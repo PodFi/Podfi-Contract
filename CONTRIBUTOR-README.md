@@ -30,6 +30,8 @@ The Podfi contract facilitates interactions between advertisers and podcast crea
 
     Include comprehensive tests for new functionalities.
     Ensure that existing tests are not broken.
+5. **Pushing To Remote:**
+    Create a different branch for your workspace: this branch will state clearly what features you worked on with your initails eg `SC_ft_marketplace_CCIP` where `SC` is the initail , `FT` is the feature tag and `marketplace and ccip` is the actual feature.
 
 
 
