@@ -1,25 +1,25 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
+import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
 
 /**
  * @title Podfi Decentralized Marketplace Smart Contract
  * @dev This contract manages the interactions between advertisers and podcast creators in a decentralized marketplace.
  * It allows advertisers to create and manage ads, and podcast creators to approve or reject ads.
  */
-contract PodfiAdsMarketplace {
-  ///@dev contract owner
-  address public owner;
+contract PodfiAdsMarketplace is PausableUpgradeable, ReentrancyGuardUpgradeable {
   ///@dev advertisers ID
   uint public nextAdvertiserId;
   ///@dev podcast creator ID
   uint public nextPodcastCreatorId;
+  ///@dev advert ID
+  uint public nextAdId;
 
   ///@notice Adstatus to track adverts statues
   enum AdStatus {
-    Pending,
-    Approved,
-    Rejected,
-    Expired
+    Inactive,
+    Active
   }
 
   /**
@@ -28,14 +28,12 @@ contract PodfiAdsMarketplace {
    * @param account Advertiser account
    * @param name Advertiser name
    * @param isVerified Boolean to check if the Advertiser is verified
-   * @param ads Mapping of ADs created by the Advertiser
    */
   struct Advertiser {
     uint id;
     address account;
     string name;
     bool isVerified;
-    mapping(uint => Ad) ads;
   }
 
   /**
@@ -49,19 +47,24 @@ contract PodfiAdsMarketplace {
    */
   struct PodcastCreator {
     uint id;
+    uint averageEngagement;
     address account;
     string channelName;
     string name;
     bool isVerified;
-    uint averageEngagement;
-    mapping(uint => Ad) ads;
   }
 
   /**
    * @dev Ad Structure
    * @param id Id of the advert
    * @param advertiser Creator of the advert
-   * @param
+   * @param content Content of the advert (video link on ipfs)
+   * @param tag Tag of the advert
+   * @param minimumeTargetEngagement minimum requirement of engagements for podcast creators to run the ads on their channels
+   * @param cost Cost of the advert (rewards to the podcaster for running the ads)
+   * @param status Status of the advert
+   * @param numberOfDays The number of days the advert will be available
+   * @param runnerFunds funds required to run the ads on the podcaster channels (multiples of the current ads cost )  cost * (numberOFChannels to run) = runnerFunds
    */
   struct Ad {
     uint id;
@@ -72,21 +75,53 @@ contract PodfiAdsMarketplace {
     uint cost;
     AdStatus status;
     uint numberOfDays;
-    bool active;
+    uint runnerFunds;
+    uint numberOfChannels;
   }
 
-  mapping(address => Advertiser) public advertisers;
-  mapping(address => PodcastCreator) public podcastCreators;
+  /**
+   * @dev  SubsribedAd structure
+   * @param id id of the advert
+   * @param expirationDate expiration date of the advertisement subscription
+   */
+  struct SubsribedAd {
+    uint id;
+    uint expirationDate;
+  }
 
-  event AdCreated(uint adId, address advertiser, address podcastCreator);
+  ///@dev mapping of advertisers details to their addresses
+  mapping(address => Advertiser) public advertisers;
+  ///@dev mapping of podcastcreator details to their addresses
+  mapping(address => PodcastCreator) public podcastCreators;
+  ///@dev mapping of podcastcreator address to their wallet balance
+  mapping(address => uint) public pcWalletBalance;
+  ///@dev mapping podcaster address to subsribed adverts ids (active and inactive), to the subscription structure
+  mapping(address => mapping(uint => SubsribedAd)) public subsribedAds;
+  ///@dev mapping adverts ID to the corresponding Adverts
+  mapping(uint => Ad) public adverts;
+  ///@dev mapping of admins
+  mapping(address => bool) public admins;
+
+  //************************* EVENTS ********************************/
+  ///@dev AdCreated events emitted when an ad is created successfully
+  event AdCreated(uint adId, address advertiser, string tag);
+  ///@dev AdStatusChanged events emitted when an ad status is updated successfully by admin
   event AdStatusChanged(uint adId, AdStatus status);
-  event AdPaymentReceived(uint adId);
+  ///@dev AdSubscribed events emitted when an ad is subscribed to
+  event AdSubscribed(uint adId);
+  ///@dev RunnerFund events emitted when ad runner funds is incremented successfully
+  event RunnerFund(uint adId, uint amount);
+  ///@dev RegisterationSuccess events emitted when a registeration is successful
+  event RegisterationSuccess(address _registrant, uint id);
+
+  //************************* ERRORS  ******************************/
+  error FundsForAdsUnavailable();
 
   /**
-   * @dev Modifier to check if the caller is the contract owner.
+   * @dev Modifier to check if the caller is the contract an admin.
    */
-  modifier onlyOwner() {
-    require(msg.sender == owner, "Not the contract owner");
+  modifier onlyAdmin() {
+    require(admins[msg.sender], "NOT_AN_ADMIN");
     _;
   }
 
@@ -94,7 +129,7 @@ contract PodfiAdsMarketplace {
    * @dev Modifier to check if the caller is a registered advertiser.
    */
   modifier onlyAdvertiser() {
-    require(advertisers[msg.sender].account == msg.sender, "Not an advertiser");
+    require(advertisers[msg.sender].account == msg.sender, "NOT_AN_ADVERTISER");
     _;
   }
 
@@ -102,7 +137,7 @@ contract PodfiAdsMarketplace {
    * @dev Modifier to check if the caller is a registered podcast creator.
    */
   modifier onlyPodcastCreator() {
-    require(podcastCreators[msg.sender].account == msg.sender, "Not a podcast creator");
+    require(podcastCreators[msg.sender].account == msg.sender, "NOT_A_PODCAST_CREATOR");
     _;
   }
 
@@ -110,7 +145,7 @@ contract PodfiAdsMarketplace {
    * @dev Modifier to check if the caller is a verified advertiser.
    */
   modifier onlyVerifiedAdvertiser() {
-    require(advertisers[msg.sender].isVerified, "Advertiser not verified");
+    require(advertisers[msg.sender].isVerified, "ADVERTISER_IS_NOT_VERIFIED");
     _;
   }
 
@@ -118,7 +153,7 @@ contract PodfiAdsMarketplace {
    * @dev Modifier to check if the caller is a verified podcast creator.
    */
   modifier onlyVerifiedPodcastCreator() {
-    require(podcastCreators[msg.sender].isVerified, "Podcast creator not verified");
+    require(podcastCreators[msg.sender].isVerified, "PODCASTOR_IS_NOT_VERIFIED");
     _;
   }
 
@@ -126,131 +161,198 @@ contract PodfiAdsMarketplace {
    * @dev Contract constructor. Sets the owner to the deployer's address.
    */
   constructor() {
-    owner = msg.sender;
+    admins[msg.sender] = true;
   }
 
+  /**
+   * @dev Function to get all ads on the platform
+   */
+  function getAds() external view returns (Ad[] memory) {
+    uint adSize = nextAdId;
+    Ad[] memory ads = new Ad[](adSize);
+    for (uint i = 0; i < adSize; i++) {
+      ads[i] = adverts[i];
+    }
+    return ads;
+  }
+
+  /**
+   * @dev Function to get an advertiser
+   * @param avertiser Address of the advertiser to get.
+   */
+  function getAdvertiser(address avertiser) external view returns (Advertiser memory) {
+    return advertisers[avertiser];
+  }
+
+  /**
+   * @dev Function to get a Podcaster
+   * @param podcaster Address of the podcaster to get.
+   */
+  function getPodcaster(address podcaster) external view returns (PodcastCreator memory, SubsribedAd[] memory) {
+    uint adSize = nextAdId;
+    SubsribedAd[] memory _subscribedAds = new SubsribedAd[](adSize);
+
+    for (uint i = 0; i < adSize; i++) {
+      // Check if the ad ID exists in the podcast creator's ads mapping
+      if (subsribedAds[podcaster][i].expirationDate != 0) {
+        _subscribedAds[i] = subsribedAds[podcaster][i];
+      }
+    }
+    return (podcastCreators[podcaster], _subscribedAds);
+  }
+
+  //***************************** ADVERTISER FUNCTIONS *********************/
   /**
    * @dev Registers a new advertiser in the marketplace.
    * @param name The name of the advertiser.
    */
   function registerAdvertiser(string memory name) external {
-    require(advertisers[msg.sender].account != msg.sender, "Already registered as an advertiser");
-    advertisers[msg.sender] = Advertiser(nextAdvertiserId, msg.sender, name, false);
+    require(advertisers[msg.sender].account != msg.sender, "ALREADY_REGISTERED_ADVERTISER");
+    Advertiser storage newAdvertiser = advertisers[msg.sender];
+    newAdvertiser.id = nextAdvertiserId;
+    newAdvertiser.account = msg.sender;
+    newAdvertiser.name = name;
+    newAdvertiser.isVerified = false;
+    emit RegisterationSuccess(msg.sender, nextAdvertiserId);
+    // Increment the nextAdvertiserId for the next registration
     nextAdvertiserId++;
-  }
-
-  /**
-   * @dev Verifies an advertiser. Only the contract owner can call this function.
-   * @param advertiser The address of the advertiser to be verified.
-   */
-  function verifyAdvertiser(address advertiser) external onlyOwner {
-    advertisers[advertiser].isVerified = true;
-  }
-
-  /**
-   * @dev Registers a new podcast creator in the marketplace.
-   * @param name The name of the podcast creator.
-   */
-  function registerPodcastCreator(string memory name) external {
-    require(podcastCreators[msg.sender].account != msg.sender, "Already registered as a podcast creator");
-    podcastCreators[msg.sender] = PodcastCreator(nextPodcastCreatorId, msg.sender, name, false);
-    nextPodcastCreatorId++;
-  }
-
-  /**
-   * @dev Verifies a podcast creator. Only the contract owner can call this function.
-   * @param podcastCreator The address of the podcast creator to be verified.
-   */
-  function verifyPodcastCreator(address podcastCreator) external onlyOwner {
-    podcastCreators[podcastCreator].isVerified = true;
   }
 
   /**
    * @dev Creates a new ad in the marketplace.
-   * @param podcastCreator The address of the podcast creator.
    * @param content The content of the ad.
+   * @param tag The tag of the new ad.
    * @param cost The cost of the ad.
-   * @param durationDays The duration of the ad in days.
+   * @param numberOfDays The duration of the ad in days.
+   * @param targetEngagement The minimumTargetEngagement required to run the ad on any channel.
+   * @param numberOfChannels The number of channels to run the ad on
    */
   function createAd(
-    address podcastCreator,
     string memory content,
+    string memory tag,
     uint cost,
-    uint durationDays
-  ) external onlyAdvertiser onlyVerifiedAdvertiser {
-    require(podcastCreators[podcastCreator].account == podcastCreator, "Invalid podcast creator address");
-
-    uint expirationTimestamp = block.timestamp + durationDays * 1 days;
+    uint numberOfDays,
+    uint targetEngagement,
+    uint numberOfChannels
+  ) external payable onlyAdvertiser onlyVerifiedAdvertiser whenNotPaused {
+    uint runnerFunds = cost * numberOfChannels;
+    require(msg.value >= runnerFunds, "INSUFFICIENT_FUNDS_TO_RUN_ADS");
 
     Ad memory newAd = Ad({
-      id: advertisers[msg.sender].ads[nextAdvertiserId].id,
+      id: nextAdId,
       advertiser: msg.sender,
-      podcastCreator: podcastCreator,
       content: content,
+      tag: tag,
+      minimumeTargetEngagement: targetEngagement,
       cost: cost,
-      status: AdStatus.Pending,
-      expirationTimestamp: expirationTimestamp,
-      paymentReceived: false
+      status: AdStatus.Active,
+      numberOfDays: numberOfDays,
+      numberOfChannels: numberOfChannels,
+      runnerFunds: runnerFunds
     });
 
-    advertisers[msg.sender].ads[nextAdvertiserId] = newAd;
-    podcastCreators[podcastCreator].ads[nextAdvertiserId] = newAd;
+    adverts[nextAdId] = newAd;
 
-    nextAdvertiserId++;
-
-    emit AdCreated(newAd.id, msg.sender, podcastCreator);
+    emit AdCreated(nextAdId, msg.sender, tag);
+    nextAdId++;
   }
 
   /**
-   * @dev Approves an ad by a podcast creator.
-   * @param adId The ID of the ad to be approved.
+   *
+   * @param adId id of the ad
    */
-  function approveAd(uint adId) external onlyPodcastCreator onlyVerifiedPodcastCreator {
-    Ad storage ad = podcastCreators[msg.sender].ads[adId];
-    require(ad.status == AdStatus.Pending, "Ad is not pending approval");
+  function incrementRunnerFunds(
+    uint adId,
+    uint amount
+  ) external onlyAdvertiser onlyVerifiedAdvertiser whenNotPaused nonReentrant {
+    Ad storage ad = adverts[adId];
+    require(msg.sender == ad.advertiser && amount > 0, "UNAUTHORIZED_NOT_CREATOR_OF_AD");
+    ad.runnerFunds = ad.runnerFunds + amount;
+    emit RunnerFund(adId, amount);
+  }
 
-    ad.status = AdStatus.Approved;
-    emit AdStatusChanged(adId, AdStatus.Approved);
+  /**@dev Function to withdraw runner funds */
+  function withdrawAdsFunds(uint adId) external onlyAdvertiser onlyVerifiedAdvertiser whenNotPaused nonReentrant {
+    Ad storage ad = adverts[adId];
+    require(ad.advertiser == msg.sender, "UNAUTHORIZED_WITHDRAWER");
+    uint amount = ad.runnerFunds;
+    ad.runnerFunds = 0;
+    payable(address(this)).transfer(amount);
+  }
+
+  //***************************** PODCASTERS FUNCTIONS *********************/
+  /**
+   * @dev Registers a new podcast creator in the marketplace.
+   * @param name The name of the podcast creator.
+   */
+  function registerPodcastCreator(
+    string memory name,
+    string memory channelName,
+    uint averageEngagement
+  ) external whenNotPaused {
+    require(podcastCreators[msg.sender].account != msg.sender, "ALREADY_REGISTERED_PODCAST_CREATORS");
+
+    PodcastCreator storage newPodcaster = podcastCreators[msg.sender];
+    newPodcaster.id = nextPodcastCreatorId;
+    newPodcaster.account = msg.sender;
+    newPodcaster.channelName = channelName;
+    newPodcaster.name = name;
+    newPodcaster.averageEngagement = averageEngagement;
+    emit RegisterationSuccess(msg.sender, nextPodcastCreatorId);
+    //increment the next podcaster ID
+    nextPodcastCreatorId++;
+  }
+
+  /**@dev Function to withdraw funds for podcasters */
+  function withdrawPodFunds() external onlyPodcastCreator onlyVerifiedPodcastCreator whenNotPaused nonReentrant {
+    uint amount = pcWalletBalance[msg.sender];
+    payable(address(this)).transfer(amount);
   }
 
   /**
-   * @dev Rejects an ad by a podcast creator.
-   * @param adId The ID of the ad to be rejected.
+   * @dev Subscribes to an ad by a advert creator.
+   * @param adId The ID of the ad to be subscribed.
    */
-  function rejectAd(uint adId) external onlyPodcastCreator onlyVerifiedPodcastCreator {
-    Ad storage ad = podcastCreators[msg.sender].ads[adId];
-    require(ad.status == AdStatus.Pending, "Ad is not pending approval");
+  function subscribeToAd(uint adId) external onlyPodcastCreator onlyVerifiedPodcastCreator whenNotPaused nonReentrant {
+    Ad storage ad = adverts[adId];
+    PodcastCreator storage pc = podcastCreators[msg.sender];
+    SubsribedAd storage sAd = subsribedAds[msg.sender][adId];
+    require(sAd.expirationDate < block.timestamp, "ADVERTS_IS_CURRENT_RUNNING");
+    require(ad.minimumeTargetEngagement >= pc.averageEngagement, "MINIMUM_ENGAGEMENT_FOR_RUNNING_AD_NOT_MET");
+    if ((ad.runnerFunds - ad.cost) <= 0) {
+      revert FundsForAdsUnavailable();
+    }
+    ad.runnerFunds = ad.runnerFunds - ad.cost;
+    pcWalletBalance[msg.sender] = pcWalletBalance[msg.sender] + ad.cost;
+    sAd.expirationDate = block.timestamp * ad.numberOfDays * 1 days;
+    sAd.id = ad.id;
+    emit AdSubscribed(adId);
+  }
 
-    ad.status = AdStatus.Rejected;
-    emit AdStatusChanged(adId, AdStatus.Rejected);
+  //******************************* ADMIN FUNCTIONS  *********************/
+  /**
+   * @dev Verifies a podcast creator. Only the contract admins can call this function.
+   * @param podcastCreator The address of the podcast creator to be verified.
+   */
+  function verifyPodcastCreator(address podcastCreator) external onlyAdmin {
+    podcastCreators[podcastCreator].isVerified = true;
   }
 
   /**
-   * @dev Receives payment for an approved ad by a podcast creator.
-   * @param adId The ID of the ad for which payment is received.
+   * @dev Verifies an advertiser. Only the contract admins can call this function.
+   * @param advertiser The address of the advertiser to be verified.
    */
-  function receivePayment(uint adId) external onlyPodcastCreator onlyVerifiedPodcastCreator {
-    Ad storage ad = podcastCreators[msg.sender].ads[adId];
-    require(ad.status == AdStatus.Approved, "Ad is not approved");
-
-    require(!ad.paymentReceived, "Payment already received");
-
-    // Assuming payment mechanism external to the contract, mark payment as received
-    ad.paymentReceived = true;
-
-    emit AdPaymentReceived(adId);
+  function verifyAdvertiser(address advertiser) external onlyAdmin {
+    advertisers[advertiser].isVerified = true;
   }
 
-  /**
-   * @dev Expires an approved ad by the advertiser.
-   * @param adId The ID of the ad to be expired.
-   */
-  function expireAd(uint adId) external {
-    Ad storage ad = advertisers[msg.sender].ads[adId];
-    require(ad.status == AdStatus.Approved, "Ad is not approved");
-    require(block.timestamp >= ad.expirationTimestamp, "Ad has not expired yet");
+  /**@dev Function to Unpause Contract */
+  function unpausePMP() external whenPaused onlyAdmin {
+    _unpause();
+  }
 
-    ad.status = AdStatus.Expired;
-    emit AdStatusChanged(adId, AdStatus.Expired);
+  /**@dev Function to pause Contract */
+  function pausePMP() external whenNotPaused onlyAdmin {
+    _pause();
   }
 }
