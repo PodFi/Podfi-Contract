@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
 import "@chainlink/contracts/src/v0.8/ChainlinkClient.sol";
@@ -61,7 +62,6 @@ contract PodFiContract is ChainlinkClient, ERC721 {
         _mint(recipient, nftId);
     }
 
-    // Helper function to convert address to string
     function addressToString(address _addr) private pure returns(string memory) {
         bytes32 value = bytes32(uint256(uint160(_addr)));
         bytes memory alphabet = "0123456789abcdef";
