@@ -22,7 +22,7 @@ contract PodfiPodcast is PausableUpgradeable, ReentrancyGuardUpgradeable {
 
   event PodcastStarted(uint podcastId);
   event PodcastEnded(uint podcastId);
-  event PodcastParticipantJoined(uint podcastId, address participant);
+  event PodcastParticipantJoined(uint podcastId, address participant, string iceCandidates);
 
   modifier onlyAdmin() {
     require(admins[msg.sender], "NOT_AN_ADMIN");
@@ -56,20 +56,29 @@ contract PodfiPodcast is PausableUpgradeable, ReentrancyGuardUpgradeable {
     return _podcasts;
   }
 
-  function startPodcast(string podcastId, string iceCandidated) {
+  function startPodcast(string podcastId, string iceCandidates) {
     if (podcasts[podcastId]) {
       revert("Podcast ID taken!"):
     }
 
-      Podcast storage _podcast = podcasts[podcastId];
+    Podcast storage _podcast = podcasts[podcastId];
 
-      _podcast.creator = msg.sender;
-      _podcast.creatorIceCandidates = iceCandidates;
-      _podcast.status = PodcastStatus.Started;
+    _podcast.creator = msg.sender;
+    _podcast.creatorIceCandidates = iceCandidates;
+    _podcast.status = PodcastStatus.Started;
 
-    podcasts[podcastId] = 
+    podcasts[podcastId] = _podcast;
 
     emit PodcastStarted(podcastId);
+  }
+
+  function joinPodcast(string podcastId, string iceCandidates) {
+    require(podcasts[podcastId], "PODCAST_NOT_FOUND");
+    require(podcasts[podcastId].status == PodcastStatus.Started, "PODCAST_NOT_STARTED");
+
+    podcasts[podcastId].listenerIceCandidate[msg.sender] = iceCandidates;
+
+    emit PodcastParticipantJoined(podcastId, msg.sender, iceCandidates);
   }
 
   function endPodcast(string podcastId) onlyPodcastCreator(podcastId) {
