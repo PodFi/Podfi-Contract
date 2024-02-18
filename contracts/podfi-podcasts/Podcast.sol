@@ -56,7 +56,7 @@ contract PodfiPodcast is PausableUpgradeable, ReentrancyGuardUpgradeable {
     return _podcasts;
   }
 
-  function startPodcast(string podcastId) {
+  function startPodcast(string podcastId, string iceCandidated) {
     if (podcasts[podcastId]) {
       revert("Podcast ID taken!"):
     }
@@ -64,6 +64,7 @@ contract PodfiPodcast is PausableUpgradeable, ReentrancyGuardUpgradeable {
       Podcast storage _podcast = podcasts[podcastId];
 
       _podcast.creator = msg.sender;
+      _podcast.creatorIceCandidates = iceCandidates;
       _podcast.status = PodcastStatus.Started;
 
     podcasts[podcastId] = 
@@ -71,24 +72,10 @@ contract PodfiPodcast is PausableUpgradeable, ReentrancyGuardUpgradeable {
     emit PodcastStarted(podcastId);
   }
 
-
   function endPodcast(string podcastId) onlyPodcastCreator(podcastId) {
     require(podcasts[podcastId].status == PodcastStatus.Started, "PODCAST_NOT_STARTED");
 
     Podcast storage _podcast = podcasts[podcastId];
     _podcast.status = PodcastStatus.Ended;
-  }
-
-  function registerIceCandidates(string podcastId, string iceCandidates) {
-    require(podcasts[podcastId], "PODCAST_NOT_FOUND!");
-
-    Podcast _podcast = podcasts[podcastId];
-
-    if (msg.sender === _podcast.creator) {
-      _podcast.creatorIceCandidates = iceCandidates;
-    }
-    else {
-      _podcast.listenerIceCandidate[msg.sender] = iceCandidates;
-    }
   }
 }
